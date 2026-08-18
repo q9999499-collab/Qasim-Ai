@@ -1,45 +1,70 @@
-# Qasim AI — Cloudflare Workers AI setup
+# Qasim AI — Cloudflare setup
 
-Qasim AI now uses **Cloudflare Workers AI** directly. OpenAI is not used by the frontend or backend.
+Qasim AI uses Cloudflare Workers AI for the backend. The GitHub Pages frontend does not contain an AI provider API key.
 
-## Security
+## Wrangler configuration
 
-No AI provider API key is placed in `index.html` or sent from the browser. The Worker uses a native Workers AI binding named `AI`.
+`wrangler.jsonc` is the source of truth for the Worker bindings.
 
-## Worker binding
+It defines:
 
-In Cloudflare Worker settings, add:
+- `AI` — Workers AI inference and image generation.
+- `AI_SEARCH` — Cloudflare AI Search namespace (`default`) for knowledge/document search.
+- `MEMORY` — KV storage reserved for persistent conversation/user memory.
+- `FILES` — R2 bucket reserved for uploaded files.
 
-- Binding type: **Workers AI**
-- Variable name: **AI**
+Cloudflare's current Wrangler configuration supports Workers AI, AI Search namespaces, KV, and R2 bindings. AI Search's modern Workers binding is `ai_search` or `ai_search_namespaces`; the legacy `env.AI.autorag()` API is not recommended for new work.
 
-The Worker code accesses it as `env.AI`.
+## Main Worker
 
-Cloudflare documents this binding and `env.AI.run()` pattern here:
-https://developers.cloudflare.com/workers-ai/configuration/bindings/
+- Worker: `qasim-ai-api`
+- Source: `worker.js`
+- Main binding: `env.AI`
 
-## Worker endpoint
+## AI model
+
+Chat model:
+
+`@cf/zai-org/glm-4.7-flash`
+
+This model supports multilingual dialogue, reasoning, coding, and multi-turn tool calling.
+
+Image model:
+
+`@cf/black-forest-labs/flux-1-schnell`
+
+## Endpoints
+
+Chat:
 
 `https://qasim-ai-api.q9999499.workers.dev/v1/chat/completions`
 
-Health check:
+Image generation:
+
+`https://qasim-ai-api.q9999499.workers.dev/v1/images/generations`
+
+Health:
 
 `https://qasim-ai-api.q9999499.workers.dev/health`
 
-## Model
+## Security
 
-The backend uses:
-
-`@cf/meta/llama-3.1-8b-instruct`
-
-The browser may send the model field, but the Worker intentionally controls the actual model so the client cannot select an unsupported provider.
-
-## Frontend
-
-`index.html` calls the Worker endpoint with standard chat-completions JSON. No `API_KEY` is required in the browser.
-
-## CORS
-
-The Worker only permits the Qasim AI GitHub Pages origin:
+The browser does not receive an OpenAI API key. The Worker uses the native Cloudflare Workers AI binding. CORS is restricted to:
 
 `https://q9999499-collab.github.io`
+
+## Deployment
+
+Cloudflare/Wrangler should deploy `worker.js` using `wrangler.jsonc`.
+
+Cloudflare's current documentation states that Wrangler can automatically provision supported resources such as KV, R2 and AI Search when bindings are configured without resource IDs. Resource identifiers created from dashboard/GitHub deployments may be visible in Cloudflare even when they are not written back into the repository.
+
+After deployment, verify:
+
+1. `AI` binding exists.
+2. `AI_SEARCH` namespace binding exists.
+3. `MEMORY` KV binding exists.
+4. `FILES` R2 bucket binding exists.
+5. `/health` reports the current model.
+6. `/v1/chat/completions` returns an AI response.
+7. `/v1/images/generations` returns an image.
