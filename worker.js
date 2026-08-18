@@ -108,6 +108,15 @@ function dataUrlToBytes(dataUrl) {
   return { mime: match[1], bytes };
 }
 
+function imageFromResult(result) {
+  if (!result) return "";
+  if (typeof result === "string") return result;
+  if (typeof result.image === "string") return result.image;
+  if (typeof result.response === "string") return result.response;
+  if (typeof result.output === "string") return result.output;
+  return "";
+}
+
 async function generateImage(request, env) {
   const body = await readJSON(request);
   const prompt = clean(body?.prompt);
@@ -119,33 +128,34 @@ async function generateImage(request, env) {
     form.append("prompt", prompt);
     form.append("width", String(Math.min(1920, Math.max(256, Number(body?.width) || 1024))));
     form.append("height", String(Math.min(1920, Math.max(256, Number(body?.height) || 1024))));
+    if (body?.guidance != null) form.append("guidance", String(body.guidance));
+    if (body?.seed != null) form.append("seed", String(body.seed));
 
     if (body?.input_image) {
       const parsed = dataUrlToBytes(body.input_image);
       if (!parsed) return json({ error: { message: "Invalid input image." } }, 400);
-      if (parsed.bytes.byteLength > 4 * 1024 * 1024) return json({ error: { message: "Input image is too large." } }, 400);
+      if (parsed.bytes.byteLength > 4 * 1024 * 1024) return json({ error: { message: "Input image is too large. Maximum is 4 MB." } }, 400);
       form.append("input_image_0", new File([parsed.bytes], "reference.jpg", { type: parsed.mime || "image/jpeg" }));
     }
 
-    // FLUX.2 [klein] requires multipart form data through the Workers AI binding.
-    // Serializing FormData through a Response creates the required multipart boundary.
     const formResponse = new Response(form);
-    const formStream = formResponse.body;
-    const formContentType = formResponse.headers.get("content-type");
-
     const result = await env.AI.run(IMAGE_MODEL, {
       multipart: {
-        body: formStream,
-        contentType: formContentType
+        body: formResponse.body,
+        contentType: formResponse.headers.get("content-type")
       }
     });
 
-    if (!result?.image) return json({ error: { message: "Image model returned no image." } }, 502);
+    const image = imageFromResult(result);
+    if (!image) {
+      console.error("Workers AI image response did not contain an image:", result);
+      return json({ error: { message: "Image model returned no image. Check the Workers AI binding/model availability." } }, 502);
+    }
 
     return json({
       created: Math.floor(Date.now() / 1000),
       model: IMAGE_MODEL,
-      data: [{ b64_json: result.image, mime_type: "image/jpeg" }]
+      data: [{ b64_json: image, mime_type: "image/jpeg" }]
     });
   } catch (error) {
     console.error("Qasim image error", error?.stack || error);
@@ -165,7 +175,7 @@ export default {
     if (origin && origin !== ALLOWED_ORIGIN) return json({ error: { message: "Origin not allowed." } }, 403);
 
     if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/health")) {
-      return json({ ok: true, service: "Qasim AI API", status: "online", provider: "Cloudflare Workers AI", model: CHAT_MODEL, image_model: IMAGE_MODEL, mode: "real-ai", image_editing: true });
+      return json({ ok: true, service: "Qasim AI API", status: "online", provider: "Cloudflare Workers AI", model: CHAT_MODEL, image_model: IMAGE_MODEL, mode: "real-ai", image_generation: true, image_editing: true });
     }
 
     if (!env.AI || typeof env.AI.run !== "function") return json({ error: { message: "Cloudflare Workers AI binding named AI is missing." } }, 500);
