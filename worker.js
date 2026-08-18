@@ -1,22 +1,18 @@
 const ALLOWED_ORIGIN = "https://q9999499-collab.github.io";
 const CHAT_MODEL = "@cf/zai-org/glm-4.7-flash";
 const IMAGE_MODEL = "@cf/black-forest-labs/flux-1-schnell";
-
 const MAX_MESSAGE_CHARS = 12000;
 const MAX_TOKENS = 4096;
 
-const SYSTEM_PROMPT = `You are Qasim, a careful, high-quality AI assistant.
-Understand English, Urdu, Roman Urdu, and mixed Urdu/English. Reply naturally in the user's language and style.
-Answer the exact question asked and do not change the subject.
-Use conversation history when relevant.
-For difficult problems, reason carefully, check assumptions and arithmetic, and answer every requested part.
-For math, show auditable working, keep units consistent, and verify the final result.
-For science, distinguish established facts, assumptions, estimates, interpretations, and analogies. Never present an analogy as literal physics. Do not claim that measurement sends a faster-than-light signal. Use precise wording for quantum mechanics, relativity, medicine, history, and other technical subjects.
-For coding, provide practical complete solutions and never claim code was tested or deployed unless it actually was.
-Do not invent facts, citations, searches, tools, actions, files, or results.
-If information is uncertain or unavailable, say so clearly instead of guessing.
-If the user asks to continue an answer, continue from the previous point instead of restarting.
-Prefer complete answers with useful structure, but avoid unnecessary repetition.`.trim();
+const SYSTEM_PROMPT = `You are Qasim, a careful, accurate AI assistant.
+Understand English, Urdu, Roman Urdu, and mixed Urdu/English. Reply in the user's language.
+Answer exactly what the user asks. Do not change the subject.
+For difficult tasks, answer every requested part, check calculations, and verify conclusions.
+For mathematics, show auditable steps, units, and a final verification.
+For science, separate established facts, assumptions, estimates, interpretations, and analogies. Never present an analogy as literal physics. Do not imply faster-than-light information transfer from entanglement.
+For coding, provide complete practical solutions and never claim testing or deployment unless actually done.
+Never invent facts, citations, searches, tools, actions, files, or results. If uncertain, say so.
+Keep answers complete but avoid unnecessary repetition.`.trim();
 
 const CORS = {
   "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
@@ -44,17 +40,7 @@ async function readJSON(request) {
 function extractText(result) {
   if (typeof result === "string") return clean(result);
   if (!result || typeof result !== "object") return "";
-  const candidates = [
-    result.response,
-    result.text,
-    result.output_text,
-    result.answer,
-    result.generated_text,
-    result.content,
-    result.message?.content,
-    result.choices?.[0]?.message?.content,
-    result.choices?.[0]?.text
-  ];
+  const candidates = [result.response, result.text, result.output_text, result.answer, result.generated_text, result.content, result.message?.content, result.choices?.[0]?.message?.content, result.choices?.[0]?.text];
   for (const value of candidates) {
     const text = clean(value);
     if (text) return text;
@@ -62,110 +48,44 @@ function extractText(result) {
   return "";
 }
 
-async function runChat(env, messages, options = {}) {
+async function runChat(env, messages) {
   return env.AI.run(CHAT_MODEL, {
     messages,
-    max_tokens: MAX_TOKENS,
+    max_completion_tokens: MAX_TOKENS,
     temperature: 0.15,
-    top_p: 0.9,
-    ...options
+    top_p: 0.9
   });
-}
-
-function streamHeaders() {
-  return {
-    "Content-Type": "text/event-stream; charset=utf-8",
-    "Cache-Control": "no-cache, no-transform",
-    "Connection": "keep-alive",
-    ...CORS
-  };
-}
-
-function streamResponse(upstream) {
-  const decoder = new TextDecoder();
-  const encoder = new TextEncoder();
-  const reader = upstream.getReader();
-  let buffer = "";
-
-  const output = new ReadableStream({
-    async pull(controller) {
-      try {
-        const { value, done } = await reader.read();
-        if (done) {
-          if (buffer.trim()) emitLines(buffer, controller, encoder);
-          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-          controller.close();
-          return;
-        }
-        buffer += decoder.decode(value, { stream: true });
-        const parts = buffer.split(/\r?\n/);
-        buffer = parts.pop() || "";
-        for (const line of parts) emitLine(line, controller, encoder);
-      } catch (error) {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: error?.message || "Stream failed" })}\n\n`));
-        controller.close();
-      }
-    },
-    cancel() {
-      reader.cancel().catch(() => {});
-    }
-  });
-
-  function emitLines(text, controller, encoder) {
-    for (const line of text.split(/\r?\n/)) emitLine(line, controller, encoder);
-  }
-
-  function emitLine(line, controller, encoder) {
-    const trimmed = line.trim();
-    if (!trimmed || !trimmed.startsWith("data:")) return;
-    const payload = trimmed.slice(5).trim();
-    if (!payload || payload === "[DONE]") return;
-    try {
-      const parsed = JSON.parse(payload);
-      const delta = extractText(parsed);
-      if (delta) controller.enqueue(encoder.encode(`data: ${JSON.stringify({ delta })}\n\n`));
-    } catch {
-      // Ignore non-JSON keepalive/event lines from the upstream stream.
-    }
-  }
-
-  return new Response(output, { headers: streamHeaders() });
 }
 
 async function chat(request, env) {
   const body = await readJSON(request);
-  if (!Array.isArray(body?.messages) || body.messages.length === 0) {
-    return json({ error: { message: "A non-empty messages array is required." } }, 400);
-  }
+  if (!Array.isArray(body?.messages) || body.messages.length === 0) return json({ error: { message: "A non-empty messages array is required." } }, 400);
 
   const messages = [];
   for (const message of body.messages) {
-    if (!message || !["user", "assistant", "system"].includes(message.role) || typeof message.content !== "string") {
-      return json({ error: { message: "Invalid message format." } }, 400);
-    }
+    if (!message || !["user", "assistant", "system"].includes(message.role) || typeof message.content !== "string") return json({ error: { message: "Invalid message format." } }, 400);
     const content = clean(message.content);
     if (!content) return json({ error: { message: "Message cannot be empty." } }, 400);
     if (content.length > MAX_MESSAGE_CHARS) return json({ error: { message: "Message is too long." } }, 400);
     messages.push({ role: message.role, content });
   }
 
-  const aiMessages = [
-    { role: "system", content: SYSTEM_PROMPT },
-    ...messages.filter(m => m.role !== "system")
-  ];
+  const aiMessages = [{ role: "system", content: SYSTEM_PROMPT }, ...messages.filter(m => m.role !== "system")];
 
   try {
-    const upstream = await runChat(env, aiMessages, { stream: true });
-    if (upstream instanceof ReadableStream) return streamResponse(upstream);
+    const result = await runChat(env, aiMessages);
+    const text = extractText(result);
+    if (!text) {
+      console.error("Workers AI empty response:", JSON.stringify(result));
+      return json({ error: { message: "Cloudflare AI returned an empty response. Please try again." } }, 502);
+    }
 
-    const fallbackText = extractText(upstream);
-    if (!fallbackText) return json({ error: { message: "Cloudflare AI returned no text. Please try again." } }, 502);
     return json({
       id: `qasim-${crypto.randomUUID()}`,
       object: "chat.completion",
       created: Math.floor(Date.now() / 1000),
       model: CHAT_MODEL,
-      choices: [{ index: 0, message: { role: "assistant", content: fallbackText }, finish_reason: "stop" }]
+      choices: [{ index: 0, message: { role: "assistant", content: text }, finish_reason: "stop" }]
     });
   } catch (error) {
     console.error("Qasim chat error:", error?.stack || error);
@@ -198,21 +118,16 @@ export default {
       if (origin && origin !== ALLOWED_ORIGIN) return json({ error: { message: "Origin not allowed." } }, 403);
       return new Response(null, { status: 204, headers: CORS });
     }
-
     if (origin && origin !== ALLOWED_ORIGIN) return json({ error: { message: "Origin not allowed." } }, 403);
 
     if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/health")) {
-      return json({ ok: true, service: "Qasim AI API", status: "online", provider: "Cloudflare Workers AI", model: CHAT_MODEL, image_model: IMAGE_MODEL, mode: "real-ai-streaming" });
+      return json({ ok: true, service: "Qasim AI API", status: "online", provider: "Cloudflare Workers AI", model: CHAT_MODEL, image_model: IMAGE_MODEL, mode: "real-ai" });
     }
 
-    if (!env.AI || typeof env.AI.run !== "function") {
-      return json({ error: { message: "Cloudflare Workers AI binding named AI is missing." } }, 500);
-    }
-
+    if (!env.AI || typeof env.AI.run !== "function") return json({ error: { message: "Cloudflare Workers AI binding named AI is missing." } }, 500);
     if (request.method !== "POST") return json({ error: { message: "Use POST for this endpoint." } }, 405);
     if (url.pathname === "/v1/chat/completions" || url.pathname === "/chat/completions") return chat(request, env);
     if (url.pathname === "/v1/images/generations" || url.pathname === "/images/generations") return generateImage(request, env);
-
     return json({ error: { message: "Endpoint not found." } }, 404);
   }
 };
