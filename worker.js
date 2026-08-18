@@ -2,13 +2,14 @@ const ALLOWED_ORIGIN = "https://q9999499-collab.github.io";
 const CHAT_MODEL = "@cf/zai-org/glm-4.7-flash";
 const IMAGE_MODEL = "@cf/black-forest-labs/flux-1-schnell";
 
-const MAX_MESSAGES = 24;
+// No artificial conversation-count limit. The model/provider still has request/context limits.
 const MAX_MESSAGE_CHARS = 12000;
 const MAX_TOKENS = 3072;
 
 const SYSTEM_PROMPT = `You are Qasim, a careful, high-quality AI assistant.
 Understand English, Urdu, Roman Urdu, and mixed Urdu/English. Reply in the user's language and style.
 Answer the exact question asked. Do not change the subject.
+Use conversation history when relevant.
 For difficult problems, reason carefully, check assumptions and arithmetic, then give a complete but efficient answer.
 Do not invent facts, citations, searches, tools, actions, files, or results.
 Distinguish facts, assumptions, estimates, analogies, and uncertainty.
@@ -73,12 +74,8 @@ async function runChat(env, messages, maxTokens) {
 async function chat(request, env) {
   const body = await readJSON(request);
 
-  if (!Array.isArray(body?.messages) || !body.messages.length) {
+  if (!Array.isArray(body?.messages) || body.messages.length === 0) {
     return json({ error: { message: "A non-empty messages array is required." } }, 400);
-  }
-
-  if (body.messages.length > MAX_MESSAGES) {
-    return json({ error: { message: `Maximum ${MAX_MESSAGES} messages are allowed.` } }, 400);
   }
 
   const messages = [];
@@ -92,21 +89,15 @@ async function chat(request, env) {
     messages.push({ role: message.role, content });
   }
 
-  // Keep only the most recent context when the frontend sends a very long history.
-  const recentMessages = messages.length > MAX_MESSAGES
-    ? messages.slice(-MAX_MESSAGES)
-    : messages;
-
   const aiMessages = [
     { role: "system", content: SYSTEM_PROMPT },
-    ...recentMessages.filter(m => m.role !== "system")
+    ...messages.filter(m => m.role !== "system")
   ];
 
   try {
     let result = await runChat(env, aiMessages, MAX_TOKENS);
     let text = extractText(result);
 
-    // Retry once with a smaller generation budget for transient empty responses.
     if (!text) {
       console.warn("Empty Workers AI response; retrying with smaller budget.");
       result = await runChat(env, aiMessages, 2048);
