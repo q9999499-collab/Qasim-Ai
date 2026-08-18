@@ -72,9 +72,34 @@ function cleanText(value) {
 
 function getText(result) {
   if (typeof result === "string") return result;
-  if (typeof result?.response === "string") return result.response;
-  if (typeof result?.text === "string") return result.text;
-  if (typeof result?.output_text === "string") return result.output_text;
+  if (!result || typeof result !== "object") return "";
+
+  const candidates = [
+    result.response,
+    result.text,
+    result.output_text,
+    result.content,
+    result.output,
+    result.choices?.[0]?.message?.content,
+    result.choices?.[0]?.text,
+    result.result?.response,
+    result.result?.text,
+    result.result?.output_text,
+    result.result?.choices?.[0]?.message?.content,
+    result.result?.choices?.[0]?.text
+  ];
+
+  for (const value of candidates) {
+    if (typeof value === "string" && value.trim()) return value;
+    if (Array.isArray(value)) {
+      const text = value
+        .map(item => typeof item === "string" ? item : item?.text || item?.content || "")
+        .filter(Boolean)
+        .join("");
+      if (text.trim()) return text;
+    }
+  }
+
   return "";
 }
 
@@ -126,6 +151,7 @@ async function chat(request, env) {
     const result = await env.AI.run(CHAT_MODEL, {
       messages: modelMessages,
       max_tokens: MAX_TOKENS,
+      max_completion_tokens: MAX_TOKENS,
       temperature: 0.15,
       top_p: 0.9,
       repetition_penalty: 1.05
@@ -134,6 +160,7 @@ async function chat(request, env) {
     const content = cleanText(getText(result));
 
     if (!content) {
+      console.error("Qasim AI returned an unrecognized response shape:", JSON.stringify(result));
       return json({ error: { message: "The AI model returned an empty response. Please try again." } }, 502);
     }
 
@@ -150,7 +177,7 @@ async function chat(request, env) {
     });
   } catch (error) {
     console.error("Qasim chat error:", error);
-    return json({ error: { message: "Qasim AI is temporarily unavailable. Please try again." } }, 502);
+    return json({ error: { message: error?.message || "Qasim AI is temporarily unavailable. Please try again." } }, 502);
   }
 }
 
@@ -186,7 +213,7 @@ async function generateImage(request, env) {
     });
   } catch (error) {
     console.error("Qasim image error:", error);
-    return json({ error: { message: "Image generation failed. Please try again." } }, 502);
+    return json({ error: { message: error?.message || "Image generation failed. Please try again." } }, 502);
   }
 }
 
