@@ -116,15 +116,30 @@ async function generateImage(request, env) {
 
   try {
     const form = new FormData();
-    form.set("prompt", prompt);
+    form.append("prompt", prompt);
+    form.append("width", String(Math.min(1920, Math.max(256, Number(body?.width) || 1024))));
+    form.append("height", String(Math.min(1920, Math.max(256, Number(body?.height) || 1024))));
+
     if (body?.input_image) {
       const parsed = dataUrlToBytes(body.input_image);
       if (!parsed) return json({ error: { message: "Invalid input image." } }, 400);
       if (parsed.bytes.byteLength > 4 * 1024 * 1024) return json({ error: { message: "Input image is too large." } }, 400);
-      form.set("input_image_0", new File([parsed.bytes], "reference.jpg", { type: parsed.mime || "image/jpeg" }));
+      form.append("input_image_0", new File([parsed.bytes], "reference.jpg", { type: parsed.mime || "image/jpeg" }));
     }
 
-    const result = await env.AI.run(IMAGE_MODEL, form);
+    // FLUX.2 [klein] requires multipart form data through the Workers AI binding.
+    // Serializing FormData through a Response creates the required multipart boundary.
+    const formResponse = new Response(form);
+    const formStream = formResponse.body;
+    const formContentType = formResponse.headers.get("content-type");
+
+    const result = await env.AI.run(IMAGE_MODEL, {
+      multipart: {
+        body: formStream,
+        contentType: formContentType
+      }
+    });
+
     if (!result?.image) return json({ error: { message: "Image model returned no image." } }, 502);
 
     return json({
@@ -134,7 +149,7 @@ async function generateImage(request, env) {
     });
   } catch (error) {
     console.error("Qasim image error", error?.stack || error);
-    return json({ error: { message: error?.message || "Image generation/editing failed." } }, 502);
+    return json({ error: { message: error?.message || "Cloudflare image generation/editing failed." } }, 502);
   }
 }
 
