@@ -4,28 +4,7 @@
   "main": "worker.js",
   "compatibility_date": "2026-08-18",
   "workers_dev": true,
-
   "ai": {
     "binding": "AI"
-  },
-
-  "ai_search_namespaces": [
-    {
-      "binding": "AI_SEARCH",
-      "namespace": "default"
-    }
-  ],
-
-  "kv_namespaces": [
-    {
-      "binding": "MEMORY"
-    }
-  ],
-
-  "r2_buckets": [
-    {
-      "binding": "FILES",
-      "bucket_name": "qasim-ai-files"
-    }
-  ]
+  }
 }
