@@ -2,22 +2,21 @@ const ALLOWED_ORIGIN = "https://q9999499-collab.github.io";
 const CHAT_MODEL = "@cf/zai-org/glm-4.7-flash";
 const IMAGE_MODEL = "@cf/black-forest-labs/flux-1-schnell";
 
-// No artificial conversation-count limit. The model/provider still has request/context limits.
 const MAX_MESSAGE_CHARS = 12000;
-const MAX_TOKENS = 3072;
+const MAX_TOKENS = 4096;
 
 const SYSTEM_PROMPT = `You are Qasim, a careful, high-quality AI assistant.
-Understand English, Urdu, Roman Urdu, and mixed Urdu/English. Reply in the user's language and style.
-Answer the exact question asked. Do not change the subject.
+Understand English, Urdu, Roman Urdu, and mixed Urdu/English. Reply naturally in the user's language and style.
+Answer the exact question asked and do not change the subject.
 Use conversation history when relevant.
-For difficult problems, reason carefully, check assumptions and arithmetic, then give a complete but efficient answer.
+For difficult problems, reason carefully, check assumptions and arithmetic, and answer every requested part.
+For math, show auditable working, keep units consistent, and verify the final result.
+For science, distinguish established facts, assumptions, estimates, interpretations, and analogies. Never present an analogy as literal physics. Do not claim that measurement sends a faster-than-light signal. Use precise wording for quantum mechanics, relativity, medicine, history, and other technical subjects.
+For coding, provide practical complete solutions and never claim code was tested or deployed unless it actually was.
 Do not invent facts, citations, searches, tools, actions, files, or results.
-Distinguish facts, assumptions, estimates, analogies, and uncertainty.
-For math, show auditable working and verify the result.
-For science, do not present simplified analogies as literal facts.
-For coding, give practical complete solutions and never claim code was tested or deployed unless it actually was.
-If the user asks to continue, continue from the last point instead of restarting.
-Prefer concise complete answers so the response finishes reliably.`.trim();
+If information is uncertain or unavailable, say so clearly instead of guessing.
+If the user asks to continue an answer, continue from the previous point instead of restarting.
+Prefer complete answers with useful structure, but avoid unnecessary repetition.`.trim();
 
 const CORS = {
   "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
@@ -38,18 +37,23 @@ function clean(value) {
   return typeof value === "string" ? value.replace(/\u0000/g, "").trim() : "";
 }
 
+async function readJSON(request) {
+  try { return await request.json(); } catch { return null; }
+}
+
 function extractText(result) {
   if (typeof result === "string") return clean(result);
+  if (!result || typeof result !== "object") return "";
   const candidates = [
-    result?.response,
-    result?.text,
-    result?.output_text,
-    result?.answer,
-    result?.generated_text,
-    result?.content,
-    result?.message?.content,
-    result?.choices?.[0]?.message?.content,
-    result?.choices?.[0]?.text
+    result.response,
+    result.text,
+    result.output_text,
+    result.answer,
+    result.generated_text,
+    result.content,
+    result.message?.content,
+    result.choices?.[0]?.message?.content,
+    result.choices?.[0]?.text
   ];
   for (const value of candidates) {
     const text = clean(value);
@@ -58,22 +62,78 @@ function extractText(result) {
   return "";
 }
 
-async function readJSON(request) {
-  try { return await request.json(); } catch { return null; }
-}
-
-async function runChat(env, messages, maxTokens) {
+async function runChat(env, messages, options = {}) {
   return env.AI.run(CHAT_MODEL, {
     messages,
-    max_completion_tokens: maxTokens,
+    max_tokens: MAX_TOKENS,
     temperature: 0.15,
-    top_p: 0.9
+    top_p: 0.9,
+    ...options
   });
+}
+
+function streamHeaders() {
+  return {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    "Connection": "keep-alive",
+    ...CORS
+  };
+}
+
+function streamResponse(upstream) {
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  const reader = upstream.getReader();
+  let buffer = "";
+
+  const output = new ReadableStream({
+    async pull(controller) {
+      try {
+        const { value, done } = await reader.read();
+        if (done) {
+          if (buffer.trim()) emitLines(buffer, controller, encoder);
+          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+          controller.close();
+          return;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split(/\r?\n/);
+        buffer = parts.pop() || "";
+        for (const line of parts) emitLine(line, controller, encoder);
+      } catch (error) {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: error?.message || "Stream failed" })}\n\n`));
+        controller.close();
+      }
+    },
+    cancel() {
+      reader.cancel().catch(() => {});
+    }
+  });
+
+  function emitLines(text, controller, encoder) {
+    for (const line of text.split(/\r?\n/)) emitLine(line, controller, encoder);
+  }
+
+  function emitLine(line, controller, encoder) {
+    const trimmed = line.trim();
+    if (!trimmed || !trimmed.startsWith("data:")) return;
+    const payload = trimmed.slice(5).trim();
+    if (!payload || payload === "[DONE]") return;
+    try {
+      const parsed = JSON.parse(payload);
+      const delta = extractText(parsed);
+      if (delta) controller.enqueue(encoder.encode(`data: ${JSON.stringify({ delta })}\n\n`));
+    } catch {
+      // Ignore non-JSON keepalive/event lines from the upstream stream.
+    }
+  }
+
+  return new Response(output, { headers: streamHeaders() });
 }
 
 async function chat(request, env) {
   const body = await readJSON(request);
-
   if (!Array.isArray(body?.messages) || body.messages.length === 0) {
     return json({ error: { message: "A non-empty messages array is required." } }, 400);
   }
@@ -95,36 +155,17 @@ async function chat(request, env) {
   ];
 
   try {
-    let result = await runChat(env, aiMessages, MAX_TOKENS);
-    let text = extractText(result);
+    const upstream = await runChat(env, aiMessages, { stream: true });
+    if (upstream instanceof ReadableStream) return streamResponse(upstream);
 
-    if (!text) {
-      console.warn("Empty Workers AI response; retrying with smaller budget.");
-      result = await runChat(env, aiMessages, 2048);
-      text = extractText(result);
-    }
-
-    if (!text) {
-      console.error("Workers AI returned no extractable text:", JSON.stringify(result));
-      return json({
-        error: {
-          message: "Cloudflare AI returned no text. Please try again.",
-          response_type: typeof result,
-          response_keys: result && typeof result === "object" ? Object.keys(result) : []
-        }
-      }, 502);
-    }
-
+    const fallbackText = extractText(upstream);
+    if (!fallbackText) return json({ error: { message: "Cloudflare AI returned no text. Please try again." } }, 502);
     return json({
       id: `qasim-${crypto.randomUUID()}`,
       object: "chat.completion",
       created: Math.floor(Date.now() / 1000),
       model: CHAT_MODEL,
-      choices: [{
-        index: 0,
-        message: { role: "assistant", content: text },
-        finish_reason: "stop"
-      }]
+      choices: [{ index: 0, message: { role: "assistant", content: fallbackText }, finish_reason: "stop" }]
     });
   } catch (error) {
     console.error("Qasim chat error:", error?.stack || error);
@@ -141,11 +182,7 @@ async function generateImage(request, env) {
   try {
     const result = await env.AI.run(IMAGE_MODEL, { prompt, steps: 4 });
     if (!result?.image) return json({ error: { message: "Image model returned no image." } }, 502);
-    return json({
-      created: Math.floor(Date.now() / 1000),
-      model: IMAGE_MODEL,
-      data: [{ b64_json: result.image, mime_type: "image/jpeg" }]
-    });
+    return json({ created: Math.floor(Date.now() / 1000), model: IMAGE_MODEL, data: [{ b64_json: result.image, mime_type: "image/jpeg" }] });
   } catch (error) {
     console.error("Qasim image error:", error?.stack || error);
     return json({ error: { message: error?.message || "Image generation failed." } }, 502);
@@ -165,15 +202,7 @@ export default {
     if (origin && origin !== ALLOWED_ORIGIN) return json({ error: { message: "Origin not allowed." } }, 403);
 
     if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/health")) {
-      return json({
-        ok: true,
-        service: "Qasim AI API",
-        status: "online",
-        provider: "Cloudflare Workers AI",
-        model: CHAT_MODEL,
-        image_model: IMAGE_MODEL,
-        mode: "real-ai"
-      });
+      return json({ ok: true, service: "Qasim AI API", status: "online", provider: "Cloudflare Workers AI", model: CHAT_MODEL, image_model: IMAGE_MODEL, mode: "real-ai-streaming" });
     }
 
     if (!env.AI || typeof env.AI.run !== "function") {
@@ -181,7 +210,6 @@ export default {
     }
 
     if (request.method !== "POST") return json({ error: { message: "Use POST for this endpoint." } }, 405);
-
     if (url.pathname === "/v1/chat/completions" || url.pathname === "/chat/completions") return chat(request, env);
     if (url.pathname === "/v1/images/generations" || url.pathname === "/images/generations") return generateImage(request, env);
 
