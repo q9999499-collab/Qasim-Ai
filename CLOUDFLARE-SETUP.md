@@ -1,39 +1,42 @@
-# Qasim AI — Cloudflare Worker setup
+# Qasim AI — Cloudflare Workers AI setup
 
-The repository now contains `worker.js`, a normal JavaScript Cloudflare Worker backend.
+Qasim AI now uses **Cloudflare Workers AI** directly. OpenAI is not used by the frontend or backend.
 
-## Important security rule
+## Security
 
-Never put the OpenAI API key in `index.html`, browser JavaScript, GitHub, screenshots, or ChatGPT.
+No AI provider API key is placed in `index.html` or sent from the browser. The Worker uses a native Workers AI binding named `AI`.
 
-Create a Cloudflare Worker from the `worker.js` code and add this as a Cloudflare Secret:
+## Worker binding
 
-`OPENAI_API_KEY`
+In Cloudflare Worker settings, add:
+
+- Binding type: **Workers AI**
+- Variable name: **AI**
+
+The Worker code accesses it as `env.AI`.
+
+Cloudflare documents this binding and `env.AI.run()` pattern here:
+https://developers.cloudflare.com/workers-ai/configuration/bindings/
 
 ## Worker endpoint
 
-After deployment, the frontend endpoint should be:
+`https://qasim-ai-api.q9999499.workers.dev/v1/chat/completions`
 
-`https://YOUR-WORKER.workers.dev/v1/chat/completions`
+Health check:
 
-The health check is:
+`https://qasim-ai-api.q9999499.workers.dev/health`
 
-`https://YOUR-WORKER.workers.dev/health`
+## Model
 
-## Frontend configuration
+The backend uses:
 
-In `index.html`, set:
+`@cf/meta/llama-3.1-8b-instruct`
 
-```js
-const CONFIG = {
-  API_URL: "https://YOUR-WORKER.workers.dev/v1/chat/completions",
-  API_KEY: "",
-  MODEL: "gpt-4o-mini",
-  TIMEOUT_MS: 60000
-};
-```
+The browser may send the model field, but the Worker intentionally controls the actual model so the client cannot select an unsupported provider.
 
-`API_KEY` must remain empty.
+## Frontend
+
+`index.html` calls the Worker endpoint with standard chat-completions JSON. No `API_KEY` is required in the browser.
 
 ## CORS
 
