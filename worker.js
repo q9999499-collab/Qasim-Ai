@@ -1,39 +1,22 @@
 const ALLOWED_ORIGIN = "https://q9999499-collab.github.io";
 const CHAT_MODEL = "@cf/zai-org/glm-4.7-flash";
 const IMAGE_MODEL = "@cf/black-forest-labs/flux-1-schnell";
-const MAX_MESSAGES = 40;
-const MAX_MESSAGE_CHARS = 16000;
-const MAX_TOKENS = 6144;
+
+const MAX_MESSAGES = 24;
+const MAX_MESSAGE_CHARS = 12000;
+const MAX_TOKENS = 3072;
 
 const SYSTEM_PROMPT = `You are Qasim, a careful, high-quality AI assistant.
-
-LANGUAGE
-- Understand English, Urdu, Roman Urdu, and mixed Urdu/English.
-- Reply in the user's language and writing style unless asked otherwise.
-- For Roman Urdu, use natural, readable Roman Urdu and avoid random English words.
-
-ACCURACY AND REASONING
-- Answer the exact question asked; do not answer a different question.
-- For difficult problems, reason carefully, check assumptions, calculate intermediate values, and verify the final result before answering.
-- Distinguish facts, estimates, assumptions, analogies, and uncertainty.
-- Never invent facts, citations, web searches, files, tool calls, actions, or results.
-- For science, medicine, law, finance, and other high-stakes topics, be precise about uncertainty and avoid presenting an analogy as a literal fact.
-- For math, show enough working to make the answer auditable and re-check arithmetic.
-- If a question is ambiguous and the ambiguity materially changes the answer, ask a concise clarification; otherwise state the assumption and proceed.
-
-CONVERSATION
-- Use the supplied conversation history.
-- Maintain continuity and do not unnecessarily restart an answer.
-- If the user asks to continue, continue from the last point instead of repeating the entire answer.
-
-CODING
-- Give complete, practical code when requested.
-- Prefer secure defaults and explain important configuration requirements.
-- Never claim code was deployed, tested, or executed unless that actually happened.
-
-STYLE
-- Be direct, helpful, professional, and concise when the question is simple.
-- For complex questions, give a structured, complete answer rather than stopping halfway.`.trim();
+Understand English, Urdu, Roman Urdu, and mixed Urdu/English. Reply in the user's language and style.
+Answer the exact question asked. Do not change the subject.
+For difficult problems, reason carefully, check assumptions and arithmetic, then give a complete but efficient answer.
+Do not invent facts, citations, searches, tools, actions, files, or results.
+Distinguish facts, assumptions, estimates, analogies, and uncertainty.
+For math, show auditable working and verify the result.
+For science, do not present simplified analogies as literal facts.
+For coding, give practical complete solutions and never claim code was tested or deployed unless it actually was.
+If the user asks to continue, continue from the last point instead of restarting.
+Prefer concise complete answers so the response finishes reliably.`.trim();
 
 const CORS = {
   "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
@@ -82,7 +65,7 @@ async function runChat(env, messages, maxTokens) {
   return env.AI.run(CHAT_MODEL, {
     messages,
     max_completion_tokens: maxTokens,
-    temperature: 0.2,
+    temperature: 0.15,
     top_p: 0.9
   });
 }
@@ -90,7 +73,7 @@ async function runChat(env, messages, maxTokens) {
 async function chat(request, env) {
   const body = await readJSON(request);
 
-  if (!Array.isArray(body?.messages) || body.messages.length === 0) {
+  if (!Array.isArray(body?.messages) || !body.messages.length) {
     return json({ error: { message: "A non-empty messages array is required." } }, 400);
   }
 
@@ -109,19 +92,24 @@ async function chat(request, env) {
     messages.push({ role: message.role, content });
   }
 
+  // Keep only the most recent context when the frontend sends a very long history.
+  const recentMessages = messages.length > MAX_MESSAGES
+    ? messages.slice(-MAX_MESSAGES)
+    : messages;
+
   const aiMessages = [
     { role: "system", content: SYSTEM_PROMPT },
-    ...messages.filter(m => m.role !== "system")
+    ...recentMessages.filter(m => m.role !== "system")
   ];
 
   try {
     let result = await runChat(env, aiMessages, MAX_TOKENS);
     let text = extractText(result);
 
-    // One controlled retry protects against transient empty model responses.
+    // Retry once with a smaller generation budget for transient empty responses.
     if (!text) {
-      console.warn("Empty Workers AI response; retrying once.");
-      result = await runChat(env, aiMessages, 4096);
+      console.warn("Empty Workers AI response; retrying with smaller budget.");
+      result = await runChat(env, aiMessages, 2048);
       text = extractText(result);
     }
 
