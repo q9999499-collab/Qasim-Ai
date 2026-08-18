@@ -1,0 +1,4 @@
+Qasim AI live backend deployment trigger
+Backend: https://qasim-ai-api.q9999499.workers.dev/v1/chat/completions
+Frontend API key: intentionally empty; authentication is handled by Cloudflare Secret OPENAI_API_KEY.
+Deployment timestamp: 2026-08-18T19:00:00+05:00
